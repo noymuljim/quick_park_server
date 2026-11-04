@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
-const cron = require("node-cron");
+// const cron = require("node-cron");
 
 const app = express();
 
@@ -14,9 +14,13 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 //firebase
 
 const { initializeApp, cert } = require("firebase-admin/app");
-const { getAuth } = require("firebase-admin/auth");
-const serviceAccount = require("./firebaseAdmin.json");
+// const { getAuth } = require("firebase-admin/auth");
+// const serviceAccount = require("./firebaseAdmin.json");
 
+// const serviceAccount = require("./firebase-admin-key.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 initializeApp({
     credential: cert(serviceAccount),
 });
@@ -102,6 +106,7 @@ async function connectToMongoDB() {
             res.send(result)
         })
 
+
         app.patch('/users/:id/role', verifyFBToken, verifyAdmin, async (req, res) => {
             const roleInfo = req.body;
             if (!["user", "partner", "admin"].includes(role)) {
@@ -119,24 +124,22 @@ async function connectToMongoDB() {
 
             res.send(result);
         })
-
         //secure users
-        app.get('/users/:email/role', verifyFBToken,async (req, res) => {
+        app.get("/users/:email/role", verifyFBToken, async (req, res) => {
             const email = req.params.email;
-             if (email !== req.decodedEmail) {
+
+            if (email !== req.decodedEmail) {
                 return res.status(403).send({ message: "forbidden access" });
             }
-            
-            const user = await usersCollection.findOne(email);
-            res.send({ role: user?.role || 'user' })
-        })
-        
+            const user = await usersCollection.findOne({ email });
+            res.send({ role: user?.role || "user" });
+        });
 
         //partners 
 
-        app.post('/partners',verifyFBToken, async (req, res) => {
+        app.post('/partners', verifyFBToken, async (req, res) => {
             const partner = req.body;
-             partner.email = req.decodedEmail;
+            partner.email = req.decodedEmail;
             partner.status = 'pending';
             partner.createdAt = new Date();
 
@@ -157,10 +160,10 @@ async function connectToMongoDB() {
         })
         //partner status+role update
         //status update
-        app.patch("/partner/:id",verifyFBToken, verifyAdmin, async (req, res) => {
+        app.patch("/partner/:id", verifyFBToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const { status, email } = req.body;
-             if (!["approved", "rejected", "pending"].includes(status)) {
+            if (!["approved", "rejected", "pending"].includes(status)) {
                 return res.status(400).send({ message: "Invalid status" });
             }
             const query = { _id: new ObjectId(id) };
@@ -230,12 +233,12 @@ async function connectToMongoDB() {
 
         ////USER API START
         //booking post
-        app.post("/bookings", verifyFBToken,async (req, res) => {
+        app.post("/bookings", verifyFBToken, async (req, res) => {
             const createdAt = new Date();
 
             const bookingData = {
                 ...req.body,
-                 user_email: req.decodedEmail,
+                user_email: req.decodedEmail,
                 createdAt,
                 expiresAt: new Date(createdAt.getTime() + 10 * 60 * 1000),
                 status: "waiting for check-in",
@@ -248,11 +251,12 @@ async function connectToMongoDB() {
             });
         });
         //get my bookings
-        app.get("/my-booking",verifyFBToken, async (req, res) => {
-            const email = req.query.email;
+        app.get("/my-booking", verifyFBToken, async (req, res) => {
+            await expireBookings();
+          
             const bookings = await bookingsCollection
                 .find({
-                     user_email: req.decodedEmail,
+                    user_email: req.decodedEmail,
                     status: { $nin: ["expired", "check-out confirmed"] }
                 })
                 .sort({ createdAt: -1 })
@@ -262,27 +266,41 @@ async function connectToMongoDB() {
         });
 
         // Expire bookings every minute
-        cron.schedule("* * * * *", async () => {
-            const result = await bookingsCollection.updateMany(
-                {
+        // cron.schedule("* * * * *", async () => {
+        //     const result = await bookingsCollection.updateMany(
+        //         {
 
-                    status: "waiting for check-in",
-                    expiresAt: { $lte: new Date() }
-                },
-                {
-                    $set: {
-                        status: "expired",
-                        expiredAt: new Date()
-                    }
-                }
-            );
+        //             status: "waiting for check-in",
+        //             expiresAt: { $lte: new Date() }
+        //         },
+        //         {
+        //             $set: {
+        //                 status: "expired",
+        //                 expiredAt: new Date()
+        //             }
+        //         }
+        //     );
 
-            if (result.modifiedCount > 0) {
-                console.log(`${result.modifiedCount} booking(s) expired`);
-            }
-        });
+        //     if (result.modifiedCount > 0) {
+        //         console.log(`${result.modifiedCount} booking(s) expired`);
+        //     }
+        // });
+        const expireBookings = () =>
+    bookingsCollection.updateMany(
+        {
+            status: "waiting for check-in",
+            expiresAt: { $lte: new Date() },
+        },
+        {
+            $set: {
+                status: "expired",
+                expiredAt: new Date(),
+            },
+        }
+    );
         //check in request
-        app.patch("/booking/check-in-request/:id",verifyFBToken, async (req, res) => {
+        app.patch("/booking/check-in-request/:id", verifyFBToken, async (req, res) => {
+                await expireBookings(); 
             const { id } = req.params;
 
             const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
@@ -315,7 +333,8 @@ async function connectToMongoDB() {
             email ? { lotId: { $in: await getPartnerLotIds(email) } } : {};
 
         ///upcoming req
-        app.get("/partner/upcoming-requests",verifyFBToken,verifyPartner, async (req, res) => {
+        app.get("/partner/upcoming-requests", verifyFBToken, verifyPartner, async (req, res) => {
+            await expireBookings();  
             const { email } = req.query;
             if (!email) return res.status(400).send({ message: "email required" });
 
@@ -342,29 +361,29 @@ async function connectToMongoDB() {
         });
 
         /////update as check-in confirm
-        app.patch('/check-in-confirm/:id',verifyFBToken,
+        app.patch('/check-in-confirm/:id', verifyFBToken,
             verifyPartner, async (req, res) => {
-            const { id } = req.params;
-            const { email } = req.decodedEmail;
+                const { id } = req.params;
+                const { email } = req.decodedEmail;
 
-            const result = await bookingsCollection.updateOne(
-                {
-                    _id: new ObjectId(id),
-                    paymentStatus: "unpaid",
-                    status: "check-in requested",
-                    ...(await ownerFilter(email)),
-                },
-                {
-                    $set:
+                const result = await bookingsCollection.updateOne(
                     {
-                        status: "check-in confirm",
-                        checkInConfirmedAt: new Date()
+                        _id: new ObjectId(id),
+                        paymentStatus: "unpaid",
+                        status: "check-in requested",
+                        ...(await ownerFilter(email)),
+                    },
+                    {
+                        $set:
+                        {
+                            status: "check-in confirm",
+                            checkInConfirmedAt: new Date()
+                        }
                     }
-                }
-            );
+                );
 
-            res.send({ success: result.modifiedCount > 0 });
-        });
+                res.send({ success: result.modifiedCount > 0 });
+            });
 
 
 
@@ -378,7 +397,7 @@ async function connectToMongoDB() {
             const result = await bookingsCollection.updateOne(
                 {
                     _id: new ObjectId(id),
-                      user_email: req.decodedEmail,
+                    user_email: req.decodedEmail,
                     status: "check-in confirm"
                 },
                 {
@@ -394,33 +413,33 @@ async function connectToMongoDB() {
 
 
         ////update as check-out confirm & payment req
-        app.patch('/check-out-confirm/payment-request/:id',verifyFBToken,
+        app.patch('/check-out-confirm/payment-request/:id', verifyFBToken,
             verifyPartner, async (req, res) => {
-            const { id } = req.params;
-            const { email } = req.decodedEmail;
+                const { id } = req.params;
+                const { email } = req.decodedEmail;
 
-            const result = await bookingsCollection.updateOne(
-                {
-                    _id: new ObjectId(id),
-                    paymentStatus: "unpaid",
-                    status: "check-out requested",
-                    ...(await ownerFilter(email))
-                },
-                {
-                    $set: {
-                        status: "payment pending",
-                        paymentRequestedAt: new Date()
+                const result = await bookingsCollection.updateOne(
+                    {
+                        _id: new ObjectId(id),
+                        paymentStatus: "unpaid",
+                        status: "check-out requested",
+                        ...(await ownerFilter(email))
+                    },
+                    {
+                        $set: {
+                            status: "payment pending",
+                            paymentRequestedAt: new Date()
+                        }
                     }
-                }
-            );
+                );
 
-            res.send({
-                success: result.modifiedCount > 0,
-                message: result.modifiedCount > 0
-                    ? "payment requested successfully"
-                    : "payment request not found"
+                res.send({
+                    success: result.modifiedCount > 0,
+                    message: result.modifiedCount > 0
+                        ? "payment requested successfully"
+                        : "payment request not found"
+                });
             });
-        });
 
 
         // Stripe Checkout 
@@ -567,7 +586,7 @@ async function connectToMongoDB() {
                 });
             }
 
-             if (payment.user_email !== req.decodedEmail) {
+            if (payment.user_email !== req.decodedEmail) {
                 return res.status(403).send({ message: "forbidden access" });
             }
             // Verify this Stripe session belongs to this payment
@@ -692,32 +711,31 @@ async function connectToMongoDB() {
 
         //PARTNER
         //update as complete session
-        app.patch('/complete-session/:id',  verifyFBToken,
-            verifyPartner, async (req, res) => {
+        app.patch('/complete-session/:id', verifyFBToken, verifyPartner, async (req, res) => {
             const { id } = req.params;
-              if (!ObjectId.isValid(bookingId)) {
+
+            if (!ObjectId.isValid(id)) {
                 return res.status(400).send({ message: "Invalid booking ID" });
             }
-            const { email } = req.decodedEmail;
+
+            const email = req.decodedEmail;
 
             const result = await bookingsCollection.updateOne(
                 {
                     _id: new ObjectId(id),
                     paymentStatus: "paid",
                     status: "payment verifying",
-                    ...(await ownerFilter(email))
+                    ...(await ownerFilter(email)),
                 },
                 {
                     $set: {
                         status: "complete session",
-                        completesessionAt: new Date()
-                    }
+                        completesessionAt: new Date(),
+                    },
                 }
             );
 
-            res.send({
-                success: result.modifiedCount > 0
-            });
+            res.send({ success: result.modifiedCount > 0 });
         });
         //USER
         //get all My Booking History
@@ -728,7 +746,7 @@ async function connectToMongoDB() {
         });
         ///ADMIN
         //get all users Booking History
-        app.get('/All-Booking-History',verifyFBToken, verifyAdmin, async (req, res) => {
+        app.get('/All-Booking-History', verifyFBToken, verifyAdmin, async (req, res) => {
             const result = await bookingsCollection.find({ status: 'complete session' }).sort({ createdAt: -1 }).toArray();
             res.send(result);
         });
@@ -736,13 +754,15 @@ async function connectToMongoDB() {
 
 
         // Home statistics
+        // Home statistics
         app.get("/stats", async (req, res) => {
             const totalActiveUsers = await usersCollection.countDocuments({
                 role: "user"
             });
 
             const totalTrustedPartners = await partnersCollection.countDocuments({
-                status: "approved"
+                status: { $ne: "rejected" },
+                lotStatus: { $ne: "disabled" }
             });
 
             res.send({
@@ -773,7 +793,7 @@ async function connectToMongoDB() {
         });
         //admin stat 7 days
         // Admin: new users & partners
-        app.get("/admin-user-growth",verifyFBToken, verifyAdmin, async (req, res) => {
+        app.get("/admin-user-growth", verifyFBToken, verifyAdmin, async (req, res) => {
             const TZ = "Asia/Dhaka";
             const DAY = 24 * 60 * 60 * 1000;
 
@@ -823,262 +843,262 @@ async function connectToMongoDB() {
         // Partner earnings
         app.get("/partner-earnings/:email", verifyFBToken,
             verifyPartner, async (req, res) => {
-            const result = await paymentsCollection.aggregate([
-                {
-                    $match: {
-                        partnerEmail: req.params.email,
-                        paymentStatus: "paid"
-                    }
-                },
-                {
-                    $group: {
-                        _id: null,
+                const result = await paymentsCollection.aggregate([
+                    {
+                        $match: {
+                            partnerEmail: req.params.email,
+                            paymentStatus: "paid"
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: null,
 
-                        // Total revenue
-                        totalEarnings: {
-                            $sum: "$partnerEarning"
-                        },
+                            // Total revenue
+                            totalEarnings: {
+                                $sum: "$partnerEarning"
+                            },
 
-                        // This month's earnings
-                        monthlyEarnings: {
-                            $sum: {
-                                $cond: [
-                                    {
-                                        $and: [
-                                            {
-                                                $eq: [
-                                                    { $month: "$createdAt" },
-                                                    new Date().getMonth() + 1
-                                                ]
-                                            },
-                                            {
-                                                $eq: [
-                                                    { $year: "$createdAt" },
-                                                    new Date().getFullYear()
-                                                ]
-                                            }
-                                        ]
-                                    },
-                                    "$partnerEarning",
-                                    0
-                                ]
-                            }
-                        },
-
-                        // Today's earnings
-                        todayEarnings: {
-                            $sum: {
-                                $cond: [
-                                    {
-                                        $eq: [
-                                            {
-                                                $dateToString: {
-                                                    format: "%Y-%m-%d",
-                                                    date: "$createdAt",
-                                                    timezone: "Asia/Dhaka"
+                            // This month's earnings
+                            monthlyEarnings: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $and: [
+                                                {
+                                                    $eq: [
+                                                        { $month: "$createdAt" },
+                                                        new Date().getMonth() + 1
+                                                    ]
+                                                },
+                                                {
+                                                    $eq: [
+                                                        { $year: "$createdAt" },
+                                                        new Date().getFullYear()
+                                                    ]
                                                 }
-                                            },
-                                            new Date().toLocaleDateString("en-CA", {
-                                                timeZone: "Asia/Dhaka"
-                                            })
-                                        ]
-                                    },
-                                    "$partnerEarning",
-                                    0
-                                ]
-                            }
-                        },
+                                            ]
+                                        },
+                                        "$partnerEarning",
+                                        0
+                                    ]
+                                }
+                            },
 
-                        totalPayments: { $sum: 1 }
+                            // Today's earnings
+                            todayEarnings: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $eq: [
+                                                {
+                                                    $dateToString: {
+                                                        format: "%Y-%m-%d",
+                                                        date: "$createdAt",
+                                                        timezone: "Asia/Dhaka"
+                                                    }
+                                                },
+                                                new Date().toLocaleDateString("en-CA", {
+                                                    timeZone: "Asia/Dhaka"
+                                                })
+                                            ]
+                                        },
+                                        "$partnerEarning",
+                                        0
+                                    ]
+                                }
+                            },
+
+                            totalPayments: { $sum: 1 }
+                        }
                     }
-                }
-            ]).toArray();
+                ]).toArray();
 
-            res.send({
-                totalEarnings: result[0]?.totalEarnings || 0,
-                monthlyEarnings: result[0]?.monthlyEarnings || 0,
-                todayEarnings: result[0]?.todayEarnings || 0,
-                totalPayments: result[0]?.totalPayments || 0
+                res.send({
+                    totalEarnings: result[0]?.totalEarnings || 0,
+                    monthlyEarnings: result[0]?.monthlyEarnings || 0,
+                    todayEarnings: result[0]?.todayEarnings || 0,
+                    totalPayments: result[0]?.totalPayments || 0
+                });
             });
-        });
 
 
         // Partner last 7 days bookings stat
-        app.get("/admin-user-growth",verifyFBToken,
+        app.get("/admin-user-growth", verifyFBToken,
             verifyPartner, async (req, res) => {
-            const TZ = "Asia/Dhaka";
-            const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: TZ });
-            const startDate = new Date(
-                new Date(`${todayStr}T00:00:00+06:00`).getTime() - 6 * 24 * 60 * 60 * 1000
-            );
+                const TZ = "Asia/Dhaka";
+                const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: TZ });
+                const startDate = new Date(
+                    new Date(`${todayStr}T00:00:00+06:00`).getTime() - 6 * 24 * 60 * 60 * 1000
+                );
 
-            const daily = await usersCollection.aggregate([
-                {
-                    $match: {
-                        role: { $in: ["user", "partner"] },
-                        createdAt: { $gte: startDate }
-                    }
-                },
-                {
-                    $group: {
-                        _id: {
-                            date: {
-                                $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: TZ }
+                const daily = await usersCollection.aggregate([
+                    {
+                        $match: {
+                            role: { $in: ["user", "partner"] },
+                            createdAt: { $gte: startDate }
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: {
+                                date: {
+                                    $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: TZ }
+                                },
+                                role: "$role"
                             },
-                            role: "$role"
-                        },
-                        count: { $sum: 1 }
+                            count: { $sum: 1 }
+                        }
+                    },
+                    {
+                        $project: { _id: 0, date: "$_id.date", role: "$_id.role", count: 1 }
                     }
-                },
-                {
-                    $project: { _id: 0, date: "$_id.date", role: "$_id.role", count: 1 }
-                }
-            ]).toArray();
+                ]).toArray();
 
-            const totalUsers = await usersCollection.countDocuments({ role: "user" });
-            const totalPartners = await usersCollection.countDocuments({ role: "partner" });
+                const totalUsers = await usersCollection.countDocuments({ role: "user" });
+                const totalPartners = await usersCollection.countDocuments({ role: "partner" });
 
-            res.send({ daily, totalUsers, totalPartners });
-        });
+                res.send({ daily, totalUsers, totalPartners });
+            });
 
         // Partner disable request
-        app.patch("/application/disable-request/:id",verifyFBToken,
+        app.patch("/application/disable-request/:id", verifyFBToken,
             verifyPartner, async (req, res) => {
-            const { id } = req.params;
-            const { email } = req.decodedEmail;
-            const result = await partnersCollection.updateOne(
-                {
-                    _id: new ObjectId(id),
-                    email,
-                    status: "approved",
-                    lotStatus: { $ne: "disabled" },
-                },
-                {
-                    $set: {
-                        disableRequest: "pending",
-                        disableRequestedAt: new Date(),
-                    },
-                }
-            );
-
-            if (!result.modifiedCount) {
-                return res.status(400).send({
-                    message: "Unable to submit disable request.",
-                });
-            }
-
-            res.send({
-                success: true,
-                message: "Disable request submitted successfully.",
-            });
-        });
-        //
-
-        app.get("/admin/disable-requests", verifyFBToken,
-            verifyAdmin, async (req, res) => {
-            const result = await partnersCollection.find({
-                status: "approved",
-                disableRequest: "pending",
-            }).toArray();
-
-            res.send(result);
-        });
-
-
-        app.patch("/admin/disable-request/:id", verifyFBToken,
-            verifyAdmin, async (req, res) => {
-            const { id } = req.params;
-            const { action } = req.body;
-
-            if (!["approve", "reject"].includes(action)) {
-                return res.status(400).send({
-                    message: "Invalid action",
-                });
-            }
-
-            const partner = await partnersCollection.findOne({
-                _id: new ObjectId(id),
-                status: "approved",
-                disableRequest: "pending",
-                lotStatus: { $ne: "disabled" },
-            });
-
-            if (!partner) {
-                return res.status(404).send({
-                    message: "Disable request not found",
-                });
-            }
-
-            // Reject request
-            if (action === "reject") {
+                const { id } = req.params;
+                const { email } = req.decodedEmail;
                 const result = await partnersCollection.updateOne(
                     {
                         _id: new ObjectId(id),
-                        disableRequest: "pending",
+                        email,
+                        status: "approved",
+                        lotStatus: { $ne: "disabled" },
                     },
                     {
                         $set: {
-                            disableRequest: "rejected",
-                            disableReviewedAt: new Date(),
+                            disableRequest: "pending",
+                            disableRequestedAt: new Date(),
                         },
                     }
                 );
 
-                return res.send({
-                    success: result.modifiedCount > 0,
-                    message: "Disable request rejected",
-                });
-            }
+                if (!result.modifiedCount) {
+                    return res.status(400).send({
+                        message: "Unable to submit disable request.",
+                    });
+                }
 
-            // Check active bookings
-            const activeBooking = await bookingsCollection.findOne({
-                lotId: id,
-                status: {
-                    $in: [
-                        "waiting for check-in",
-                        "check-in requested",
-                        "check-in confirm",
-                        "check-out requested",
-                        "payment pending",
-                        "payment verifying",
-                    ],
-                },
+                res.send({
+                    success: true,
+                    message: "Disable request submitted successfully.",
+                });
+            });
+        //
+
+        app.get("/admin/disable-requests", verifyFBToken,
+            verifyAdmin, async (req, res) => {
+                const result = await partnersCollection.find({
+                    status: "approved",
+                    disableRequest: "pending",
+                }).toArray();
+
+                res.send(result);
             });
 
-            if (activeBooking) {
-                return res.status(400).send({
-                    message: "This lot has active bookings. Cannot disable it right now.",
-                });
-            }
 
-            // Approve disable request
-            const result = await partnersCollection.updateOne(
-                {
+        app.patch("/admin/disable-request/:id", verifyFBToken,
+            verifyAdmin, async (req, res) => {
+                const { id } = req.params;
+                const { action } = req.body;
+
+                if (!["approve", "reject"].includes(action)) {
+                    return res.status(400).send({
+                        message: "Invalid action",
+                    });
+                }
+
+                const partner = await partnersCollection.findOne({
                     _id: new ObjectId(id),
+                    status: "approved",
                     disableRequest: "pending",
                     lotStatus: { $ne: "disabled" },
-                },
-                {
-                    $set: {
-                        lotStatus: "disabled",
-                        disableRequest: "approved",
-                        disableReviewedAt: new Date(),
-                        disabledAt: new Date(),
-                    },
-                }
-            );
-
-            if (!result.modifiedCount) {
-                return res.status(400).send({
-                    message: "Failed to update lot",
                 });
-            }
 
-            res.send({
-                success: true,
-                message: "Lot disabled successfully",
+                if (!partner) {
+                    return res.status(404).send({
+                        message: "Disable request not found",
+                    });
+                }
+
+                // Reject request
+                if (action === "reject") {
+                    const result = await partnersCollection.updateOne(
+                        {
+                            _id: new ObjectId(id),
+                            disableRequest: "pending",
+                        },
+                        {
+                            $set: {
+                                disableRequest: "rejected",
+                                disableReviewedAt: new Date(),
+                            },
+                        }
+                    );
+
+                    return res.send({
+                        success: result.modifiedCount > 0,
+                        message: "Disable request rejected",
+                    });
+                }
+
+                // Check active bookings
+                const activeBooking = await bookingsCollection.findOne({
+                    lotId: id,
+                    status: {
+                        $in: [
+                            "waiting for check-in",
+                            "check-in requested",
+                            "check-in confirm",
+                            "check-out requested",
+                            "payment pending",
+                            "payment verifying",
+                        ],
+                    },
+                });
+
+                if (activeBooking) {
+                    return res.status(400).send({
+                        message: "This lot has active bookings. Cannot disable it right now.",
+                    });
+                }
+
+                // Approve disable request
+                const result = await partnersCollection.updateOne(
+                    {
+                        _id: new ObjectId(id),
+                        disableRequest: "pending",
+                        lotStatus: { $ne: "disabled" },
+                    },
+                    {
+                        $set: {
+                            lotStatus: "disabled",
+                            disableRequest: "approved",
+                            disableReviewedAt: new Date(),
+                            disabledAt: new Date(),
+                        },
+                    }
+                );
+
+                if (!result.modifiedCount) {
+                    return res.status(400).send({
+                        message: "Failed to update lot",
+                    });
+                }
+
+                res.send({
+                    success: true,
+                    message: "Lot disabled successfully",
+                });
             });
-        });
 
 
 
@@ -1103,19 +1123,39 @@ async function connectToMongoDB() {
     }
 }
 
+// // Routes
+// app.get("/", (req, res) => {
+//     res.send("running park");
+// });
+
+// // Start server
+// async function startServer() {
+//     await connectToMongoDB();
+
+//     app.listen(port, () => {
+//         console.log(`Server running on port ${port}`);
+//     });
+// }
+
+// startServer();
+
 // Routes
-app.get("/", (req, res) => {
-    res.send("running park");
+app.get("/", (req, res) => res.send("running park"));
+
+// Connect to Mongo once, before handling requests
+let ready;
+function init() {
+    if (!ready) ready = connectToMongoDB();
+    return ready;
+}
+app.use(async (req, res, next) => {
+    await init();
+    next();
 });
 
-// Start server
-async function startServer() {
-    await connectToMongoDB();
-
-    app.listen(port, () => {
-        console.log(`Server running on port ${port}`);
-    });
+if (process.env.VERCEL) {
+    module.exports = app;          // Vercel
+} else {
+    init().then(() => app.listen(port, () => console.log(`Server running on port ${port}`)));
 }
-
-startServer();
 
