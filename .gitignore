@@ -3,5 +3,6 @@ node_modules/
 .env.*
 !.env.example
 firebaseAdmin.json
+firebaseAdminKey.json
 firebase-admin-key.json
 .vercel
