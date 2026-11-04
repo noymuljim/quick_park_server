@@ -1,5 +1,7 @@
-.env
 node_modules/
-printf '\nnode_modules/\nfirebaseAdmin.json\n.env\n.env.*\n!.env.example\n' >> .gitignore
+.env
+.env.*
+!.env.example
 firebaseAdmin.json
+firebase-admin-key.json
 .vercel

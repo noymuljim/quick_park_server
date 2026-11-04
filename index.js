@@ -1154,8 +1154,7 @@ app.use(async (req, res, next) => {
 });
 
 if (process.env.VERCEL) {
-    module.exports = app;          // Vercel
+    module.exports = app;
 } else {
     init().then(() => app.listen(port, () => console.log(`Server running on port ${port}`)));
 }
-
